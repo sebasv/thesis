@@ -23,28 +23,7 @@ def estimate_short_rate():
     return rs, rxi, rkappa # (0.05555211960687775, 0.001819691482190981, 0.26823591027620042)
 
 
-def simulate(Sh=_Sh, qS=_qS, qV=_qV, sS=_sS, sV=_sV, r=_r, k=_k):
-    gamma_lb = - np.sqrt(Sh**2 - (qS/sS)**2)
-    gamma_ub = + np.sqrt(Sh**2 - (qS/sS)**2)
-    
-    sigmaM_lb = np.array([qS/sS, gamma_lb])
-    muM_lb = -.5 * sigmaM_lb @ sigmaM_lb.T
 
-    sigmaM_ub = np.array([qS/sS, gamma_ub])
-    muM_ub = -.5 * sigmaM_ub @ sigmaM_ub.T
-
-    sigmaM = np.array([qS/sS, 0])
-    muM = -.5 * sigmaM @ sigmaM.T
-
-    sigmaV = np.array([sV*r, sV*bar(1,r)])
-    muV = -qV -.5 * sigmaV @ sigmaV.T
-    
-    V = np.exp(muV + sigmaV @ W)
-    M_lb = np.exp(muM_lb + sigmaM_lb @ W)
-    M = np.exp(muM + sigmaM @ W)
-    M_ub = np.exp(muM_ub + sigmaM_ub @ W)
-    F = np.maximum(0, V-k)
-    return V, M_lb, M, M_ub, F
 
 
 def CIR(x0, W, n, dt, kappa, xi, sigma):
@@ -59,7 +38,7 @@ def geom(x0, W, n, dt, R, V, q, sigma):
     X = cumprod(1 + (R+q)*dt + V*sigma@W)
     return r_[1,X]
 
-class Simulation(object):
+class Calibration(object):
     self.snu = np.array([0,0,1])
 
     def __init__(self, step_per_t=100, n_simulations=1000, T=1):
@@ -93,11 +72,14 @@ class Simulation(object):
         
 
 
-    if __name__ == '__main__':
-        df = pd.read_csv(r'd:\data\scriptie\spx_option_quotes.csv')
+if __name__ == '__main__':
+    with sqlite3.connect(r'd:\data\scriptie\wrds.sqlite') as con:
+        df = pd.read_sql(
+            """select observation, CAST(maturity AS FLOAT)/365 t, (best_bid+best_offer)/2 mid, strike_price/close strike 
+            from spx_options where observation between '2016-01-29' and '2016-02-01'""",
+            con
+            )
 
-    
-        N = int(1e5)
-        W = np.random.normal(scale=1/np.sqrt(N), size=(N,))
-        x = CIR(0, W, N, 1/N, rkappa, rxi, rs)
+    cal = Calibration(step_per_t=365, n_simulations=1000, T=)
+
 
