@@ -7,6 +7,7 @@ from matplotlib import pyplot as plt
 import multiprocessing as mp
 from multiprocessing import Process, Queue
 import time
+from coptimizer import cheyette, CIR
 
 # class Optimizer(object):
 #     con = sqlite3.connect(r'D:\data\scriptie\optimization.sqlite')
@@ -29,20 +30,20 @@ def estimate_short_rate():
     return rs, rxi, rkappa # (0.05555211960687775, 0.001819691482190981, 0.26823591027620042)
 
 
-def cheyette(kappa, sigma, n, p, W, dt, f):
-    X = np.zeros((n+1, p))
-    Y = 0
-    for i in range(n):
-        X[i+1] = X[i] + (Y -kappa*X[i])*dt + sigma*W[i]
-        Y     += (sigma**2-2*kappa*Y)*dt
-    return X + f
+#def cheyette(kappa, sigma, n, p, W, dt, f):
+#    X = np.zeros((n+1, p))
+#    Y = 0
+#    for i in range(n):
+#        X[i+1] = X[i] + (Y -kappa*X[i])*dt + sigma*W[i]
+#        Y     += (sigma**2-2*kappa*Y)*dt
+#    return X + f
 
-def CIR(x0, W, n, p, dt, kappa, xi, sigma):
-    """CIR process from randomness W, initial value x0 and parameters"""
-    X = np.ones((n+1, p))*x0
-    for i in range(n):
-        X[i+1] = np.abs( X[i] + kappa*(xi - X[i])*dt + np.sqrt(X[i])*sigma*W[i] )
-    return X
+#def CIR(x0, W, n, p, dt, kappa, xi, sigma):
+#    """CIR process from randomness W, initial value x0 and parameters"""
+#    X = np.ones((n+1, p))*x0
+#    for i in range(n):
+#        X[i+1] = np.abs( X[i] + kappa*(xi - X[i])*dt + np.sqrt(X[i])*sigma*W[i] )
+#    return X
 
 
 def iv_to_call(df):
