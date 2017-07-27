@@ -14,6 +14,6 @@ setup(
 )
 
 shutil.move(
-    r'c:\users\mail\Source\coptimizer.cp36-win_amd64.pyd', 
+    r'coptimizer.cp36-win_amd64.pyd', 
     r'd:\git\thesis\optimization\Optimizer\coptimizer.pyd'
 )

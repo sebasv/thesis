@@ -5,19 +5,152 @@ import json
 from scipy import stats, optimize
 from matplotlib import pyplot as plt
 import multiprocessing as mp
-from multiprocessing import Process, Queue
+from multiprocessing import Process, Queue, Pool
 import time
-from coptimizer import cheyette, CIR
+# from coptimizer import cheyette, CIR
 
 # class Optimizer(object):
 #     con = sqlite3.connect(r'D:\data\scriptie\optimization.sqlite')
 #     df = pd.read_csv(r'd:\data\scriptie\spx_option_quotes.csv')
 
 
+def cheyette(kappa, sigma, n, p, W, dt, f):
+   X = np.zeros((n+1, p))
+   Y = 0
+   for i in range(n):
+       X[i+1] = X[i] + (Y -kappa*X[i])*dt + sigma*W[i]
+       Y     += (sigma**2-2*kappa*Y)*dt
+   return X + f
+
+
+def CIR(W, dt, kappa, xi, sigma):
+   """CIR process from randomness W, initial value x0 and parameters"""
+   X = np.ones_like(W)*np.abs(xi)
+   for i in range(W.shape[0]-1):
+       X[i+1] = np.abs( X[i] + kappa*(xi - X[i])*dt + np.sqrt(X[i])*sigma*W[i] )
+   return X
+
+
+def heston(W, dt, kappa_v, xi_v, sigma_v):
+    V = 1 + np.sqrt( CIR(W[:, :, 0], dt, kappa_v, xi_v, sigma_v) )
+    return V
+
+
+def efficient(W, V, r, dt, qS, delta, sS):
+    beta = -qS / (sS * sS) / V
+    WsS = W[:,:,1] *sS
+    S = np.cumprod(1 + (r+qS)*dt + WsS * V, 0)
+    p3 = beta * WsS + W[:, :, 0] * delta
+    M = np.cumprod(1 - r * dt + p3, 0)
+    return S, M
+
+
+def _error(s, m, k, p):
+    return np.square(np.mean(m*np.maximum(k-s, 0)) - p)
+
+
+def all_errors(S, M, T, K, P):
+    err = 0
+    for t, k, p in zip(T, K, P):
+        err += _error(S[t], M[t], k, p)
+    print(err)
+    return err
+
+
+def new_simulation(kappa_r=0.0212, sigma_r=0.00445, forward_curve=.002, dt=.01, n_simulations=10000, T=10):
+    n_steps = int(T/dt)+1
+    W = np.random.normal(scale=np.sqrt(dt), size=(n_steps, n_simulations, 3))
+    Wr = np.random.normal(scale=np.sqrt(dt), size=(n_steps-1, n_simulations))
+    r = cheyette(kappa_r, sigma_r, *Wr.shape, Wr, dt, forward_curve)
+    return W, r
+
+
+def optimize_given_v(V, W, r, dt, T, K, P, start_params):
+    opt = optimize.minimize(
+        lambda params: all_errors(*efficient(W, V, r, dt, *params), T, K, P),
+        start_params,
+        method='Powell'
+    )
+    return opt.x, opt.fun
+
+
+def opt_fun(W, r, dt, T, K, P, params_v, params_sm):
+    V = heston(W, dt, *params_v)
+    _params, fun = optimize_given_v(V, W, r, dt, T, K, P, params_sm)
+    # update params_sm in-place
+    params_sm -= params_sm
+    params_sm += _params
+    print(*params_v, *params_sm)
+    return fun
+# -.1578, .4470, .1325
+
+def optimize_for_v(W, r, dt, T, K, P):
+    params_sm = np.r_[.2, .5, .13]
+    opt = optimize.minimize(
+        lambda params_v: opt_fun(W, r, dt, T, K, P, params_v, params_sm),
+        np.r_[2, .2, .2],
+        method='Powell'
+    )
+    return np.r_[opt.x, params_sm], opt.fun
+
+
+def optimize_overall(W, r, dt, T, K, P):
+    def opt_fun(params):
+        V = heston(W, dt, *params[:3])
+        return all_errors(*efficient(W, V, r, dt, *params[3:]), T, K, P)
+    
+    opt = optimize.minimize(
+        opt_fun,
+        np.random.exponential(.2, 6)
+    )
+    return opt.x, opt.fun
+
+
+def iter_process(t):
+    dt = .01
+
+    con = sqlite3.connect(r'H:\results.sqlite')
+    con.execute('create table if not exists heston_new(kappa_v real, xi_v real, sigma_v real, qs real, delta real, ss real, fun real, created datetime default current_timestamp)')
+    df = pd.read_sql('select * from surface', con)
+    T = (df['T'].values/dt).astype(int)
+    K = df['K'].values
+    P = df['put'].values
+
+    while time.time() < t:
+        W, r = new_simulation(dt=dt)
+
+        params, fun = optimize_overall(W, r, dt, T, K, P)
+        print(fun)
+        con.execute(
+            '''insert into heston_new(kappa_V, xi_v, sigma_v,          qS, delta, sS          , fun)
+            values (?,?,?,?,?,?,?)''', [*params, fun])
+        con.commit()
+
+
+
+if __name__ == '__main__':
+    procs = [Process(target=iter_process, args=(time.time()+36000,)) for _ in range(12)]
+    for proc in procs:
+        proc.start()
+    for proc in procs:
+        proc.join()
+
+"""
+
+
+def iv_to_call(df):
+    d1 = lambda s, k, ss, t: np.log(s/k)/ss/np.sqrt(t) + ss*np.sqrt(t)
+    d2 = lambda s, k, ss, t: d1(s,k, ss, t) - ss*np.sqrt(t)
+    C = lambda s, k, ss, t:  stats.norm.cdf( d1(s, k, ss, t))*s - stats.norm.cdf( d2(s, k, ss, t))*k
+    P = lambda s, k, ss, t: -stats.norm.cdf(-d1(s, k, ss, t))*s + stats.norm.cdf(-d2(s, k, ss, t))*k
+    df['put'] = df.apply(lambda row: P(1, row['K'], row['sigma'], row['T']), 1)
+    return df
+
+
 def estimate_short_rate():
-    """
+    '''
     Returns a CIR representation of the zero-coupon data from WRDS.
-    """
+    '''
     zyc = pd.read_csv(r'd:\data\scriptie\zero_coupon_yield_curve.csv')
     short_rate = zyc.sort_values(['date','days']).groupby('date').first()['rate'].div(100)
 
@@ -28,33 +161,6 @@ def estimate_short_rate():
     rs = np.sqrt(resid/len(Y)).item()
     rxi = a/b
     return rs, rxi, rkappa # (0.05555211960687775, 0.001819691482190981, 0.26823591027620042)
-
-
-#def cheyette(kappa, sigma, n, p, W, dt, f):
-#    X = np.zeros((n+1, p))
-#    Y = 0
-#    for i in range(n):
-#        X[i+1] = X[i] + (Y -kappa*X[i])*dt + sigma*W[i]
-#        Y     += (sigma**2-2*kappa*Y)*dt
-#    return X + f
-
-#def CIR(x0, W, n, p, dt, kappa, xi, sigma):
-#    """CIR process from randomness W, initial value x0 and parameters"""
-#    X = np.ones((n+1, p))*x0
-#    for i in range(n):
-#        X[i+1] = np.abs( X[i] + kappa*(xi - X[i])*dt + np.sqrt(X[i])*sigma*W[i] )
-#    return X
-
-
-def iv_to_call(df):
-    d1 = lambda s, k, ss, t: np.log(s/k)/ss/np.sqrt(t) + ss*np.sqrt(t)
-    d2 = lambda s, k, ss, t: d1(s,k, ss, t) - ss*np.sqrt(t)
-    bs = lambda s, k, ss, t: stats.norm.cdf(d1(s, k, ss, t))*s - stats.norm.cdf(d2(s, k, ss, t))*k
-    data = df.copy()
-    for k in data.columns:
-        for t in data.index:
-            data.loc[t, k] = bs(1, k, data.loc[t, k], t) #impvol to BS price
-    return data
 
 
 class CheyetteCalibration(object):
@@ -91,7 +197,7 @@ class CheyetteCalibration(object):
 
 
 def _error(Ml, Mu, S, k, C):
-    """
+    '''
     Params
     -----
     C : call option price at maturity T
@@ -105,7 +211,7 @@ def _error(Ml, Mu, S, k, C):
     Returns
     -----
     absolute error of crossing the bound
-    """
+    '''
     return max(0, C - np.mean(Mu*np.maximum(0, S-k))) + max(0, np.mean(Ml*np.maximum(0, S-k)) - C)
 
 
@@ -185,7 +291,7 @@ class Calibration(object):
 
 
 def json_to_sql():
-    con = sqlite3.connect('results.sqlite')
+    con = sqlite3.connect(r'H:\results.sqlite')
     with open('spx_option_data.json') as f:
         js = json.load(f)
     df = pd.Panel(js).loc[:,:,'2017/06/30']
@@ -194,7 +300,8 @@ def json_to_sql():
     df.index = df.index.days/365
     df = df[df.index>0]
     df /= 100
-    df.to_sql('option_data', con, if_exists='replace')
+    df = df.reset_index().melt(id_vars='index').rename(columns={'index':'T', 'variable':'K', 'value':'sigma'})
+    iv_to_call(df).to_sql('surface', con, if_exists='replace', index=False)
 
 
 def do_calibration(q, t):
@@ -207,33 +314,34 @@ def do_calibration(q, t):
 
 
 if __name__ == '__main__':
-    con = sqlite3.connect('results.sqlite')
-    con.execute('create table if not exists cheyette(kappa real, xi real, created datetime default current_timestamp, p real, dt real, f real, fun real)')
+    # con = sqlite3.connect('results.sqlite')
+    # con.execute('create table if not exists cheyette(kappa real, xi real, created datetime default current_timestamp, p real, dt real, f real, fun real)')
     forward_curve = .002
 
     json_to_sql()
 
     if False:
-        print('started')
-        with open('usd_swaption_data.json') as f:
-            js = json.load(f)
-        df = pd.Panel(js).loc[:,'log-normal vol',:]
-        df.index = df.index.str.replace('ATM','0.00%').str.replace('%','').astype('float')/100 + 1
-        df.columns = df.columns.astype(int)
-        print('initializing')
-        cc = CheyetteCalibration(df.T)
-        print('started optimization')
-        print(cc.calibrate(p=10000, f=forward_curve, con=con)) #  0.9912468 ,  1.29428977
+    #     print('started')
+    #     with open('usd_swaption_data.json') as f:
+    #         js = json.load(f)
+    #     df = pd.Panel(js).loc[:,'log-normal vol',:]
+    #     df.index = df.index.str.replace('ATM','0.00%').str.replace('%','').astype('float')/100 + 1
+    #     df.columns = df.columns.astype(int)
+    #     print('initializing')
+    #     cc = CheyetteCalibration(df.T)
+    #     print('started optimization')
+    #     print(cc.calibrate(p=10000, f=forward_curve, con=con)) #  0.9912468 ,  1.29428977
 
     #plt.plot(cheyette(*cc.x.x, 100, 10, np.random.normal(0, .1, (100,10)), .01, forward_curve))
     #plt.plot(np.mean(cheyette(*cc.x.x, 100, 10, np.random.normal(0, .1, (100,10)), .01, forward_curve),1))
-    t = time.time()+60
-    queues = [Queue() for _ in range(2)]
-    procs = [Process(target=do_calibration, args=(q, t)) for q in queues]
-    for p in procs:
-        p.start()
-    while any(p.is_alive() for p in procs):
-        out = [q.get() for q, p in zip(queues, procs) if p.is_alive() or not q.empty()]
-        print('---')
-        print('violation', ' '.join(f'{c[0]:12.8f}' for c in out))
-        print('gamma    ', ' '.join(f'{c[1]:12.8f}' for c in out))
+        t = time.time()+60
+        queues = [Queue() for _ in range(2)]
+        procs = [Process(target=do_calibration, args=(q, t)) for q in queues]
+        for p in procs:
+            p.start()
+        while any(p.is_alive() for p in procs):
+            out = [q.get() for q, p in zip(queues, procs) if p.is_alive() or not q.empty()]
+            print('---')
+            print('violation', ' '.join(f'{c[0]:12.8f}' for c in out))
+            print('gamma    ', ' '.join(f'{c[1]:12.8f}' for c in out))
+"""#"""

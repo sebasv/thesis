@@ -1,5 +1,26 @@
 import numpy as np
 cimport numpy as np
+from scipy import optimize
+import pandas as pd
+
+
+cdef _error(np.ndarray[double] M, np.ndarray[double]  S, float k, float C):
+    # return np.max(0, C - np.mean(Mu*np.maximum(0, S-k))) + np.max(0, np.mean(Ml*np.maximum(0, S-k)) - C)
+    return np.square(0, C - np.mean(M*np.maximum(0, S-k)))
+
+
+cdef squared_error(np.ndarray[double] T, np.ndarray[double] K, np.ndarray[double] C, np.ndarray[double, ndim=2] M, np.ndarray[double, ndim=2] S, float dt):
+    cdef float err = 0
+    cdef float t, k ,c
+    cdef int idx
+    for i in range(len(T)):
+        t = T[i]
+        k = K[i]
+        c = C[i]
+        idx = int(t/dt)
+        err += _error(M[idx], S[idx], k, c)
+    return err
+
 
 cdef cheyette(float kappa, float sigma, int n, int p, np.ndarray[double, ndim=2] W, float dt, float f):
     cdef np.ndarray[double, ndim=2] X = np.zeros((n+1, p), dtype=np.float64)
@@ -7,10 +28,11 @@ cdef cheyette(float kappa, float sigma, int n, int p, np.ndarray[double, ndim=2]
     for i in range(n):
         for j in range(p):
             X[i+1, j] = X[i, j] + (Y -kappa*X[i, j])*dt + sigma*W[i, j]
-        Y     += (sigma**2-2*kappa*Y)*dt
+        Y += (sigma**2-2*kappa*Y)*dt
     return X + f
 
-cdef CIR(float x0, np.ndarray[double, ndim=2] W, int n, int p, float dt, float kappa, float xi, float sigma):
+
+cdef CIR(np.ndarray[double, ndim=2] W, int n, int p, float dt, float x0, float kappa, float xi, float sigma):
     """CIR process from randomness W, initial value x0 and parameters"""
     cdef np.ndarray[double, ndim=2] X = np.ones((n+1, p), dtype=np.float64)*x0
     for i in range(n):
@@ -18,17 +40,59 @@ cdef CIR(float x0, np.ndarray[double, ndim=2] W, int n, int p, float dt, float k
             X[i+1, j] = np.abs( X[i, j] + kappa*(xi - X[i, j])*dt + np.sqrt(X[i, j])*sigma*W[i, j] )
     return X
 
-    
-cdef calculate( np.ndarray[double, ndim=2]V, np.ndarray[double, ndim=3] W, np.ndarray[double, ndim=2] r, float dt, float qS, float delta, float sS, float gamma, float sV):
-    cdef float beta = -qS / (sS * sS) / V
-    cdef np.ndarray[double, ndim=2] S = np.cumprod(1 + (r+qS)*dt + (W@np.r_[0, sS, sV]) * V, 0)
-    cdef np.ndarray[double, ndim=2] lu = W @ np.r_[0, 0, gamma]
-    cdef np.ndarray[double, ndim=2] Mu = np.cumprod(1 -  r    *dt + W @ np.r_[delta, sS*beta, 0] + lu, 0)
-    cdef np.ndarray[double, ndim=2] Ml = np.cumprod(1 -  r    *dt + W @ np.r_[delta, sS*beta, 0] - lu, 0)
-    cdef np.ndarray[double] SMu = np.mean(S*Mu, 1)
-    cdef np.ndarray[double] SMl = np.mean(S*Ml, 1)
-    return SMu, SMl
 
+cdef estimate(np.ndarray[double, ndim=2] V, np.ndarray[double, ndim=3] W, np.ndarray[double, ndim=2] r, float dt, float qS, float delta, float sS):
+    cdef float beta = -qS / (sS * sS) / V
+    cdef np.ndarray[double, ndim=2] S = np.cumprod(1 + (r+qS)*dt + (W@np.r_[0, sS, 0]) * V, 0)    
+    cdef np.ndarray[double, ndim=2] M = np.cumprod(1 - r     *dt + W @ np.r_[delta, sS*beta, 0], 0)
+    return S, M
+
+
+def optimize( W,  r, float dt,  T, K, C):
+    params = np.zeros(3)
+    args = np.zeros(3)
+    opt = optimize.minimize(
+        optim_func_without_v,
+        args,
+        args=(params, T, K, C, dt, W, r),
+        method='Powell'
+    )
+    return args, params
+
+
+def optim_func_without_v(args, params, T, K, C, dt, W, r):
+    V = 1 + np.sqrt( CIR(W[:, :, 0], W.shape[0], W.shape[1], dt, args[0], args[1], args[0], args[2])[:-1, :] )
+    params_, fun = optimize_given_v(T, K, C, V, W, r, dt, params)
+    params -= params
+    params += params_
+    return fun
+
+
+cdef optim_func(np.ndarray[double] args, np.ndarray[double] T, np.ndarray[double] K, np.ndarray[double] C, float dt, np.ndarray[double, ndim=2] V, np.ndarray[double, ndim=3] W, np.ndarray[double, ndim=2] r):
+    S, M = estimate(V, W, r, dt, args[0], args[1], args[2])
+    return squared_error(T, K, C, M, S, dt)
+    
+
+#cdef calculate( np.ndarray[double] bla, ndim=2]V, np.ndarray[double, ndim=3] W, np.ndarray[double, ndim=2] r, float dt, float qS, float delta, float sS, float gamma, float sV):
+#    cdef float beta = -qS / (sS * sS) / V
+#    cdef np.ndarray[double, ndim=2] S = np.cumprod(1 + (r+qS)*dt + (W@np.r_[0, sS, sV]) * V, 0)
+#    cdef np.ndarray[double, ndim=2] lu = W @ np.r_[0, 0, gamma]
+#    cdef np.ndarray[double, ndim=2] Mu = np.cumprod(1 -  r    *dt + W @ np.r_[delta, sS*beta, 0] + lu, 0)
+#    cdef np.ndarray[double, ndim=2] Ml = np.cumprod(1 -  r    *dt + W @ np.r_[delta, sS*beta, 0] - lu, 0)
+#    return S, Mu, Ml
+    # cdef np.ndarray[double] SMu = np.mean(S*Mu, 1)
+    # cdef np.ndarray[double] SMl = np.mean(S*Ml, 1)
+    # return SMu, SMl
+
+
+def optimize_given_v( T,  K,  C,  V,  W, r,  dt, params):
+    opt = optimize.minimize(
+        optim_func,
+        params,
+        args=(T, K, C, V, W, r, dt),
+        method='Powell'
+    )
+    return opt.x, opt.fun
 # TODO optimization routine for given V
 # TODO optimization routine for V
 # TODO simulation routine
