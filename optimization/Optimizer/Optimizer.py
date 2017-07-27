@@ -111,7 +111,7 @@ def _error(Ml, Mu, S, k, C):
 
 class Calibration(object):
     snu = np.array([1,0,0])
-    sV  = np.array([0,1,0])
+    sS  = np.array([0,1,0])
 
     def __init__(self, r_xi, r_kappa, r_f, con):
         self.r_params = [r_xi, r_kappa, r_f]
@@ -121,9 +121,10 @@ class Calibration(object):
 
     def efficient(self, qS, kappa_v, xi_v, sigma_v, delta, sS):
         V = 1 + np.sqrt( CIR(xi_v, self.W[:, :, 0], self.discretization_steps, self.n_simulations, self.dt, kappa_v, xi_v, sigma_v)[:-1] )
-        beta = -qS / np.inner(sS, sS) / V
-        S = np.cumprod(1 + (self.r+qS)*self.dt + (self.W @ sS) * V, 0)
-        p3 = beta * (self.W @ sS) + self.W[:, :, 0] * delta
+        beta = -qS / (sS * sS) / V
+        WsS = self.W[:,:,1] *sS
+        S = np.cumprod(1 + (self.r+qS)*self.dt + WsS * V, 0)
+        p3 = beta * WsS + self.W[:, :, 0] * delta
         M = np.cumprod(1 - self.r * self.dt + p3, 0)
         return S, M
         
