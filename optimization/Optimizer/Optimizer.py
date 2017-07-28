@@ -44,6 +44,16 @@ def efficient(W, V, r, dt, qS, delta, sS):
     M = np.cumprod(1 - r * dt + p3, 0)
     return S, M
 
+def inefficient(W, V, r, dt, qS, delta, sS, gamma, rho):
+    beta = -qS / (sS * sS) / V
+    WsS = W[:,:,1] *sS
+    S = np.cumprod(1 + (r+qS)*dt + WsS * V, 0)
+    p3 = beta * WsS + W[:, :, 0] * delta
+    WsV = (rho*W[:, :, 1] + np.sqrt(1-rho**2)*W[:, :, 2]) * sS * gamma
+    Mu = np.cumprod(1 - r * dt + p3 - WsV, 0)
+    Ml = np.cumprod(1 - r * dt + p3 + WsV, 0)
+    return S, Mu, Ml
+
 
 def _error(s, m, k, p):
     return np.square(np.mean(m*np.maximum(k-s, 0)) - p)
